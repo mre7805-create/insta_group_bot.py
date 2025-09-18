@@ -1,0 +1,8 @@
+instagrapi
+requests
+websockets
+pillow
+pycryptodomex
+httpx
+fastapi
+uvicorn
