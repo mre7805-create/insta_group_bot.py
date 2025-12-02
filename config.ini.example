@@ -1,8 +1,0 @@
-[bot]
-token = 123456:ABC-DEF # ضع توكن البوت هنا
-owner_id = 123456789   # آي دي صاحب البوت (لإرسال تنبيهات/تحكم كامل)
-
-[server]
-use_webhook = False
-webhook_url = https://your-service/render.example/webhook
-port = 8443
