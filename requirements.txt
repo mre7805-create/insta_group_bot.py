@@ -1,8 +1,6 @@
-instagrapi
-requests
-websockets
-pillow
-pycryptodomex
-httpx
-fastapi
-uvicorn
+python-telegram-bot==13.15
+Flask==2.2.5            # اختياري لو تريد webhook
+requests==2.31.0
+python-dotenv==1.0.0
+pytz
+sqlalchemy==1.4.0
