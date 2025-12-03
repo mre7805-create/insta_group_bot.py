@@ -1,9 +1,5 @@
 {
-  "username": "MAIN_BOT",
-  "password": "main_pass",
-  "session_file": "session_main.json",
-
-  "helper_username": "HELPER_BOT",
-  "helper_password": "helper_pass",
-  "helper_session_file": "session_helper.json"
+    "username": "MAIN_BOT",
+    "password": "main_pass",
+    "session_file": "session_main.json"
 }
