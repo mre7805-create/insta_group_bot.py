@@ -4,27 +4,28 @@ from modules.ig_api import IG
 from modules.admin import ADMIN
 from modules.utils import log
 
-LAST_MESSAGES = {}   # لمنع تكرار الرسائل
+LAST_MESSAGES = {}   # لمنع إعادة معالجة نفس الرسالة
 
 
 def normalize_message(item):
     """
-    تحويل أي رسالة/حدث من إنستقرام إلى دكت مفهوم داخل البوت
-    يدعم:
-    - نص
-    - طرد
-    - إضافة عضو
-    - مغادرة عضو
-    - تغيير اسم القروب
-    - تغيير صورة القروب
-    - action_log
-    - كل item_type أخرى
+    تحويل أي رسالة/حدث من إنستقرام إلى دكت مفهوم داخل البوت.
+    يدعم جميع الأنواع تمامًا مثل ما تظهر للمستخدم:
+
+    ✔ نص
+    ✔ طرد عضو
+    ✔ إضافة عضو
+    ✔ مغادرة
+    ✔ تغيير اسم القروب
+    ✔ تغيير صورة القروب
+    ✔ كل الـ action_log
+    ✔ أي item_type مستقبلية (fallback)
     """
 
     msg_type = item.get("item_type")
-    user_id = str(item.get("user_id") or "")  # قد يكون فارغ عند بعض الأحداث
+    user_id = str(item.get("user_id") or "")
 
-    # ============ 1) رسائل نصية ============
+    # ============ 1) نص عادي ============
     if msg_type == "text":
         return {
             "type": "text",
@@ -33,7 +34,7 @@ def normalize_message(item):
             "raw": item
         }
 
-    # ============ 2) طرد عضو ============
+    # ============ 2) طرد ============
     if msg_type == "remove_user":
         return {
             "type": "remove_user",
@@ -55,7 +56,7 @@ def normalize_message(item):
     if msg_type == "action_log":
         action = item.get("action_log", {}).get("description", "").lower()
 
-        # غادر القروب
+        # مغادرة عضو
         if "left the group" in action:
             return {
                 "type": "left_group",
@@ -81,7 +82,7 @@ def normalize_message(item):
                 "raw": item
             }
 
-        # إضافة عضو من خلال action_log
+        # إضافة عضو (من action_log)
         if "added" in action and "to the group" in action:
             return {
                 "type": "add_user",
@@ -89,14 +90,14 @@ def normalize_message(item):
                 "raw": item
             }
 
-        # أي action آخر
+        # أي شيء آخر
         return {
             "type": "action_log",
             "text": action,
             "raw": item
         }
 
-    # ============ 5) fallback ============
+    # ============ 5) fallback لأي item_type ثاني ============
     return {
         "type": msg_type,
         "raw": item
@@ -104,15 +105,19 @@ def normalize_message(item):
 
 
 def process_thread(thread):
+    """
+    تحليل ثريد واحد وإرسال أحدث حدث لنظام الأدمن
+    """
+
     thread_id = thread.get("thread_id")
     users = thread.get("users", [])
-    is_group = len(users) > 2  # IG يعتبر 3+ = قروب
+    is_group = len(users) > 2  # IG: قروب = 3 أعضاء+
 
     items = thread.get("items", [])
     if not items:
         return
 
-    last_item = items[0]  # أحدث رسالة/حدث
+    last_item = items[0]  # أحدث شيء
 
     # منع التكرار
     msg_key = f"{thread_id}:{last_item.get('item_id')}"
@@ -120,9 +125,10 @@ def process_thread(thread):
         return
     LAST_MESSAGES[msg_key] = True
 
+    # تحليل الحدث
     msg = normalize_message(last_item)
 
-    # إرسال الحدث لنظام الأدمن
+    # إرسال إلى نظام الأدمن
     ADMIN.process_command(
         thread_id=thread_id,
         msg=msg,
@@ -132,12 +138,16 @@ def process_thread(thread):
 
 
 def check_inbox():
+    """
+    يجلب كل الثريدات ويرسل آخر حدث من كل واحد
+    """
+
     threads = IG.get_inbox()
     if not threads:
         return
 
     for th in threads:
-        full = IG.get_thread_messages(th["thread_id"])
-        if full:
-            th["items"] = full[::-1]  # ترتيب من الأقدم للأحدث
+        full_items = IG.get_thread_messages(th["thread_id"])
+        if full_items:
+            th["items"] = full_items[::-1]  # ترتيب من القديم إلى الجديد
             process_thread(th)
