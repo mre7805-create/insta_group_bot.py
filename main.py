@@ -5,36 +5,25 @@ Instagram UserBot – ملف التشغيل الرئيسي
 """
 
 import time
-from modules.ig_client import ig
-from modules.handlers import handle_message
+from modules.listener import check_inbox
+from modules.ig_api import IG
 from modules.utils import log
 
 def main():
     log("🚀 تشغيل بوت إنستقرام...")
 
     # تسجيل الدخول + تحميل الجلسة
-    ig.login()
-
-    last_checked = time.time()
+    IG.login()
 
     while True:
         try:
-            # جلب الرسائل الجديدة
-            inbox = ig.client.direct_threads()
-
-            for thread in inbox:
-                messages = thread.messages
-
-                for msg in messages:
-                    if msg.timestamp > last_checked:
-                        handle_message(thread, msg)
-
-            last_checked = time.time()
+            # فحص كل الرسائل والأنشطة
+            check_inbox()
 
         except Exception as e:
             log(f"⚠️ خطأ في الحلقة الرئيسية: {e}")
 
-        time.sleep(2)  # لا نستهلك السيرفر
+        time.sleep(2)  # لا نستهلك الجهاز
 
 if __name__ == "__main__":
     main()
