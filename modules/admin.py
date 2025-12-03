@@ -4,7 +4,8 @@ import os
 import time
 from typing import Optional
 
-from modules.ig_api import IG     # يفترض أن IG هو مثيل InstagramAPI في ig_api.py
+import requests
+from modules.ig_api import IG     # IG هو الصنف في ig_api.py
 from modules.utils import log
 
 STATE_FILE = "admin_state.json"
@@ -20,7 +21,7 @@ STATE_FILE = "admin_state.json"
 #   ...
 # }
 # config.json يجب أن يحتوي على مفتاح "dev_ids": [12345, ...]
-# (برمجياً نقرأه داخل init)
+
 
 class AdminSystem:
     def __init__(self, config_path="config.json"):
@@ -50,8 +51,11 @@ class AdminSystem:
             self.state = {}
 
     def _save_state(self):
-        with open(STATE_FILE, "w", encoding="utf8") as f:
-            json.dump(self.state, f, ensure_ascii=False, indent=2)
+        try:
+            with open(STATE_FILE, "w", encoding="utf8") as f:
+                json.dump(self.state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"admin._save_state error: {e}")
 
     # ---------- helpers ----------
     def _ensure_thread(self, thread_id):
@@ -96,8 +100,11 @@ class AdminSystem:
     def _thread_info(self, thread_id: str) -> dict:
         """إحضار معلومات الثريد (المستخدمين والصلاحيات) - ترجع dict أو {}"""
         try:
-            r = IG.session.get(f"{IG.base}/direct_v2/threads/{thread_id}/", headers=IG.headers, timeout=15)
-            return r.json().get("thread", {}) if r.status_code in (200,201) else {}
+            url = f"{IG.API_URL}/direct_v2/threads/{thread_id}/"
+            r = requests.get(url, headers=IG.headers, timeout=15)
+            if r.status_code in (200, 201):
+                return r.json().get("thread", {}) or {}
+            return {}
         except Exception as e:
             log(f"admin._thread_info error: {e}")
             return {}
@@ -105,39 +112,59 @@ class AdminSystem:
     def _user_is_real_admin(self, thread_id: str, user_id: str) -> bool:
         """
         يفحص قائمة المستخدمين في الثريد إن كان لديهم علامة أدمين حقيقية
-        (يعتمد على وجود حقل في رد الإنستا 'is_admin' أو 'is_moderator' أو status)
+        (يعتمد على وجود حقل في رد الإنستا 'is_admin' أو 'is_moderator' أو role/status)
         """
         info = self._thread_info(thread_id)
         users = info.get("users") or info.get("items") or []
         for u in users:
-            # بنحاول استخراج id و flags بعدة مفاتيح محتملة
-            uid = str(u.get("pk") or u.get("id") or u.get("user_id") or u.get("user", {}).get("pk"))
+            uid = str(u.get("pk") or u.get("id") or u.get("user_id") or u.get("user", {}).get("pk") or "")
             if uid == str(user_id):
-                # تحقق من مفاتيح مختلفة بحسب رد الإنستا
                 if u.get("is_admin") or u.get("is_moderator") or u.get("is_team_admin"):
                     return True
-                # بعض الردود تضع role أو permissions
-                role = u.get("role") or u.get("status")
+                role = u.get("role") or u.get("status") or ""
                 if isinstance(role, str) and role.lower() in ("admin", "creator", "administrator"):
                     return True
         return False
 
     def _resolve_target_from_reply_or_username(self, thread_id: str, msg: dict) -> Optional[dict]:
         """
-        msg expects:
+        msg may include:
           - 'reply_to_user_id' (optional)
           - 'reply_to_username' (optional)
+          - 'reply_to_message_id' (optional)
           - 'text' (the command text, may contain @username)
-        Returns: {'user_id':..., 'username':...} or None
+          - 'raw' (the raw item) - listener provides this
+        Returns: {'user_id':..., 'username':..., 'reply_to_message_id':...} or None
         """
-        # 1) reply-based
-        rid = msg.get("reply_to_user_id")
-        rusername = msg.get("reply_to_username")
+        # 1) reply-based: try fields directly
+        rid = msg.get("reply_to_user_id") or None
+        rusername = msg.get("reply_to_username") or None
+        rmsgid = msg.get("reply_to_message_id") or None
+
+        # also try to detect from raw if provided
+        raw = msg.get("raw") or {}
+        # Instagram uses fields like 'replied_to_item_id' inside raw items
+        if not rmsgid:
+            rmsgid = raw.get("replied_to_item_id") or raw.get("replied_to_message_id") or None
+
+        # If raw contains the replied item with user info, try to extract
+        if raw and not rid:
+            replied = raw.get("replied_to") or raw.get("replied_to_item") or {}
+            # some payloads include a user dict inside replied_to
+            try:
+                if isinstance(replied, dict):
+                    ru = replied.get("user") or replied.get("sender") or {}
+                    if ru:
+                        rid = ru.get("pk") or ru.get("id") or ru.get("user_id") or rid
+                        rusername = rusername or ru.get("username")
+            except Exception:
+                pass
+
         if rid:
-            return {"user_id": str(rid), "username": rusername or ""}
+            return {"user_id": str(rid), "username": rusername or "", "reply_to_message_id": rmsgid}
 
         # 2) @username in text
-        text = msg.get("text","").strip()
+        text = (msg.get("text") or "").strip()
         parts = text.split()
         for p in parts:
             if p.startswith("@") and len(p) > 1:
@@ -147,28 +174,51 @@ class AdminSystem:
                 for u in info.get("users", []) + info.get("items", []):
                     uname_field = u.get("username") or u.get("user", {}).get("username")
                     if uname_field and uname_field.lower() == uname.lower():
-                        uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk"))
-                        return {"user_id": uid, "username": uname_field}
+                        uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk") or "")
+                        return {"user_id": uid, "username": uname_field, "reply_to_message_id": rmsgid}
                 # if not found in thread, still return username (best effort)
-                return {"user_id": None, "username": uname}
+                return {"user_id": None, "username": uname, "reply_to_message_id": rmsgid}
         return None
 
-    def _send_reply(self, thread_id: str, reply_to_message_id: Optional[str], text: str):
+    def _send_reply(self, thread_id: str, reply_to_message_id: Optional[str], text: str) -> bool:
         """
         يرسل رد في الثريد كـ reply إن أمكن
-        يستخدم endpoint البسيط broadcast/text مع حقل reply_to_message_id إن وُجد
+        نستخدم IG.reply إذا موجود، وإلا نستخدم endpoint العام
         """
-        data = {
-            "action": "send_item",
-            "thread_ids": f'["{thread_id}"]',
-            "text": text
-        }
-        if reply_to_message_id:
-            data["reply_to_message_id"] = str(reply_to_message_id)
         try:
-            IG.session.post(f"{IG.base}/direct_v2/threads/broadcast/text/", data=data, headers=IG.headers, timeout=15)
+            if reply_to_message_id:
+                # استخدم واجهة IG.reply المساعدة إن وُجدت
+                try:
+                    ok = IG.reply(thread_id, reply_to_message_id, text)
+                    if ok:
+                        return True
+                except Exception:
+                    pass
+                # fallback إلى direct endpoint
+                url = f"{IG.API_URL}/direct_v2/threads/broadcast/text/"
+                data = {
+                    "thread_ids": f'["{thread_id}"]',
+                    "text": text,
+                    "reply_type": "reply",
+                    "replied_to_item_id": str(reply_to_message_id)
+                }
+                r = requests.post(url, headers=IG.headers, data=data, timeout=15)
+                return r.status_code in (200, 201)
+            else:
+                # لا reply
+                try:
+                    ok = IG.send_message(thread_id, text)
+                    if ok:
+                        return True
+                except Exception:
+                    pass
+                url = f"{IG.API_URL}/direct_v2/threads/broadcast/text/"
+                data = {"thread_ids": f'["{thread_id}"]', "text": text}
+                r = requests.post(url, headers=IG.headers, data=data, timeout=15)
+                return r.status_code in (200, 201)
         except Exception as e:
             log(f"admin._send_reply error: {e}")
+            return False
 
     # ---------- commands ----------
     def cmd_activate(self, thread_id: str, msg: dict):
@@ -191,15 +241,13 @@ class AdminSystem:
         if not self.is_dev(user):
             return
 
-        # محاولة مغادرة الثريد
+        # رد قبل المغادرة ثم مغادرة
+        self._send_reply(thread_id, msg.get("message_id"), "تم المغادرة")
         try:
-            IG.session.post(f"{IG.base}/direct_v2/threads/{thread_id}/leave/", headers=IG.headers, timeout=15)
+            url = f"{IG.API_URL}/direct_v2/threads/{thread_id}/leave/"
+            requests.post(url, headers=IG.headers, timeout=15)
         except Exception as e:
             log(f"admin.leave error: {e}")
-        # لا نرد بعد المغادرة (قد لا نستطيع)، لكن نرد قبل المغادرة اذا أردت.
-        # هنا نرسل رد قبل المغادرة:
-        self._send_reply(thread_id, msg.get("message_id"), "تم المغادرة")
-        # ثم نقوم بالفعل بالمغادرة اثناء تنفيذ الطلب - بعض الأحيان البوت لن يستطيع الرد بعد leave
 
     def cmd_recognize_owner(self, thread_id: str, msg: dict):
         """/تعرف — فقط Dev يعرّف مؤسس المجموعة عبر الريبلاي على رسالة المؤسس"""
@@ -209,8 +257,6 @@ class AdminSystem:
 
         target = self._resolve_target_from_reply_or_username(thread_id, msg)
         if not target or not target.get("user_id"):
-            # إن لم نتمكن من العثور على user_id نرد فشل صغير
-            # لكن الطلب قال تجاهل الحالات غير المخولة بصمت؛ هنا dev طلب صراحة، نرد إن لم نجده
             self._send_reply(thread_id, msg.get("message_id"), "لم أجد المستخدم لتعيينه مؤسساً")
             return
 
@@ -218,8 +264,7 @@ class AdminSystem:
         self.state[thread_id]["owner"] = {"user_id": str(target["user_id"]), "username": target.get("username") or ""}
         self._save_state()
 
-        username_to_show = target.get("username") or ("@" + str(target["user_id"]))
-        # الرد المطلوب نصاً
+        username_to_show = target.get("username") or str(target.get("user_id"))
         self._send_reply(thread_id, msg.get("message_id"),
                          f"تم التعرف على @{username_to_show} كمؤسس للمجموعة له كامل الصلاحيات وحماية من السرقة")
 
@@ -238,16 +283,14 @@ class AdminSystem:
         targ_id = str(target["user_id"])
         targ_username = target.get("username") or targ_id
 
-        # لا نسمح لمنح صلاحية لأحد إذا كان فعلاً أدمن حقيقي لا يحتاج
+        # لا نسمح لمنح صلاحية لأحد إذا كان فعلاً أدمن حقيقي
         if self._user_is_real_admin(thread_id, targ_id):
-            # لا نغير حالة الأدمن الحقيقي
             self._send_reply(thread_id, msg.get("message_id"), "المستخدم هدفه أدمن حقيقي ولا يمكن منحه صلاحية البوت")
             return
 
         self.add_bot_admin(thread_id, targ_id)
-        # رد بالصيغة المحددة
         self._send_reply(thread_id, msg.get("message_id"),
-                         f"({('@' + targ_username) if targ_username else targ_id}) صار له صلاحيات ادمن في القروب")
+                         f"@{targ_username} صار له صلاحيات ادمن في القروب")
 
     def cmd_remove_admin(self, thread_id: str, msg: dict):
         """/سحب — فقط owner يمكنه سحب صلاحية بوت-ادمن"""
@@ -271,16 +314,14 @@ class AdminSystem:
 
         self.remove_bot_admin(thread_id, targ_id)
         self._send_reply(thread_id, msg.get("message_id"),
-                         f"({('@' + targ_username) if targ_username else targ_id}) سحبت منه صلاحيات الادمن")
+                         f"@{targ_username} سحبت منه صلاحيات الادمن")
 
     def _can_execute_admin_action(self, thread_id: str, caller_id: str) -> bool:
         """الادمن الحقيقي أو ادمن مرفوع داخل البوت"""
-        # مؤسس المجموعة (owner) لا يعتبر ضمن "ادمن حقيقي" هنا لكنه يملك صلاحيات كاملة بالفعل
         if self.get_owner(thread_id) and str(self.get_owner(thread_id).get("user_id")) == str(caller_id):
             return True
         if self.is_bot_admin(thread_id, caller_id):
             return True
-        # تحقق من القائمين كـ admins حقيقيين في الثريد
         if self._user_is_real_admin(thread_id, caller_id):
             return True
         return False
@@ -306,28 +347,27 @@ class AdminSystem:
 
         # نفّذ الطرد عبر endpoint مناسب
         try:
-            resp = IG.session.post(f"{IG.base}/direct_v2/threads/{thread_id}/remove_user/",
-                                   data={"user_id": targ_id}, headers=IG.headers, timeout=15)
+            url = f"{IG.API_URL}/direct_v2/threads/{thread_id}/remove_user/"
+            requests.post(url, headers=IG.headers, data={"user_id": targ_id}, timeout=15)
         except Exception as e:
             log(f"admin.kick error: {e}")
-            resp = None
 
         # تحقق فعلي إن المستخدم غادر الثريد
         info = self._thread_info(thread_id)
         present = False
         for u in info.get("users", []):
-            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk"))
+            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk") or "")
             if uid == targ_id:
                 present = True
                 break
 
         if not present:
             # نجاح الطرد
-            self._send_reply(thread_id, msg.get("message_id"), f"({('@' + targ_username) if targ_username else targ_id}) Kik")
+            self._send_reply(thread_id, msg.get("message_id"), f"@{targ_username} Kik")
             # اذا كان هذا المستخدم مرفوع كـ bot-admin نزيله من قائمتنا
             self.remove_bot_admin(thread_id, targ_id)
         else:
-            self._send_reply(thread_id, msg.get("message_id"), f"{('@' + targ_username) if targ_username else targ_id} ما حصلته")
+            self._send_reply(thread_id, msg.get("message_id"), f"@{targ_username} ما حصلته")
 
     def cmd_accept(self, thread_id: str, msg: dict):
         """/قبول @usr — قبول طلب الانضمام (اضافة المستخدم الى القروب)"""
@@ -345,25 +385,24 @@ class AdminSystem:
 
         # محاولة الاضافة عبر endpoint مناسب
         try:
-            resp = IG.session.post(f"{IG.base}/direct_v2/threads/{thread_id}/add_user/",
-                                   data={"user_ids": f'["{targ_id}"]'}, headers=IG.headers, timeout=15)
+            url = f"{IG.API_URL}/direct_v2/threads/{thread_id}/add_user/"
+            requests.post(url, headers=IG.headers, data={"user_ids": f'["{targ_id}"]'}, timeout=15)
         except Exception as e:
             log(f"admin.accept error: {e}")
-            resp = None
 
         # تحقق إن المستخدم أصبح موجوداً
         info = self._thread_info(thread_id)
         present = False
         for u in info.get("users", []):
-            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk"))
+            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk") or "")
             if uid == targ_id:
                 present = True
                 break
 
         if present:
-            self._send_reply(thread_id, msg.get("message_id"), f"({('@' + targ_username) if targ_username else targ_id}) قبلته")
+            self._send_reply(thread_id, msg.get("message_id"), f"@{targ_username} قبلته")
         else:
-            self._send_reply(thread_id, msg.get("message_id"), f"{('@' + targ_username) if targ_username else targ_id} ما حصلته")
+            self._send_reply(thread_id, msg.get("message_id"), f"@{targ_username} ما حصلته")
 
     def cmd_ticket(self, thread_id: str, msg: dict):
         """
@@ -378,7 +417,7 @@ class AdminSystem:
         ticket_text = parts[1].strip() if len(parts) > 1 else ""
 
         # بناء رسالة التكت المطلوبة
-        ticket_msg = f"({('@' + caller_username) if caller_username else caller_id}) رفع تكت\n#التكت\n{ticket_text}"
+        ticket_msg = f"@{caller_username} رفع تكت\n#التكت\n{ticket_text}"
 
         # جمع قائمة مستلمي التكت:
         recipients = set()
@@ -391,19 +430,18 @@ class AdminSystem:
         # 2) الأدمن الحقيقيون من thread info
         info = self._thread_info(thread_id)
         for u in info.get("users", []):
-            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk"))
+            uid = str(u.get("pk") or u.get("id") or u.get("user", {}).get("pk") or "")
             if u.get("is_admin") or u.get("is_moderator") or (str(uid) == str(self.state[thread_id].get("owner", {}).get("user_id"))):
                 recipients.add(uid)
 
         # إرسال الرسالة لكل واحد يحاول و يتجاهل الفاشلين بصمت
         for rid in recipients:
             try:
-                # محاولة إرسال رسالة خاصة للمستخدم (new thread)
-                IG.session.post(f"{IG.base}/direct_v2/threads/broadcast/text/",
-                                data={"recipient_users": f'[[\"{rid}\"]]', "action": "send_item", "text": ticket_msg},
-                                headers=IG.headers, timeout=10)
+                url = f"{IG.API_URL}/direct_v2/threads/broadcast/text/"
+                requests.post(url, headers=IG.headers,
+                              data={"recipient_users": f'[[\"{rid}\"]]', "action": "send_item", "text": ticket_msg},
+                              timeout=10)
             except Exception:
-                # تجاهل الفشل بدون رد
                 continue
 
         # رد المؤكد للطالب (ريبلاي)
@@ -452,6 +490,7 @@ class AdminSystem:
         if cmd.startswith("/تكت"):
             self.cmd_ticket(thread_id, msg)
             return
+
 
 # إنشاء وحدة admin واحدة تستخدم في باقي الموديولات
 ADMIN = AdminSystem()
