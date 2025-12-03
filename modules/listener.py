@@ -2,9 +2,10 @@
 
 from modules.ig_api import IG
 from modules.admin import ADMIN
-from modules.utils import log, extract_text
+from modules.utils import log  # حذفنا extract_text لأنه غير مستخدم
 
 LAST_MESSAGES = {}   # لمنع تكرار الرسائل من إنستقرام
+
 
 def normalize_message(item):
     """
@@ -30,7 +31,7 @@ def process_thread(thread):
     """
     thread_id = thread.get("thread_id")
     users = thread.get("users", [])
-    is_group = len(users) > 2
+    is_group = len(users) > 2  # IG group chat logic
 
     items = thread.get("items", [])
     if not items:
@@ -64,7 +65,6 @@ def check_inbox():
         return
 
     for th in threads:
-        # نحتاج الرسائل لكل ثريد (بعض ثريدات inbox ما تجلب items)
         full = IG.get_thread_messages(th["thread_id"])
         if full:
             th["items"] = full[::-1]  # ترتيب عكسي (من أقدم إلى أحدث)
