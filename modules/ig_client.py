@@ -209,12 +209,27 @@ class InstagramAPI:
 
     # ---------- FETCH THREAD MESSAGES ----------
     def get_thread_messages(self, thread_id):
-        try:
-            res = self._request("get", f"direct_v2/threads/{thread_id}/")
-            return res.get("thread", {}).get("items", []) if isinstance(res, dict) else []
-        except Exception as e:
-            log(f"⚠️ get_thread_messages failed: {e}")
-            return []
+    try:
+        res = self._request("get", f"direct_v2/threads/{thread_id}/")
+        items = res.get("thread", {}).get("items", []) if isinstance(res, dict) else []
+
+        cleaned = []
+        for it in items:
+            # توحيد شكل text
+            if it.get("item_type") == "text":
+                txt = it.get("text")
+                if isinstance(txt, dict):
+                    it["text"] = txt.get("text", "")
+                elif isinstance(txt, str):
+                    it["text"] = txt
+                else:
+                    it["text"] = ""
+            cleaned.append(it)
+
+        return cleaned
+    except Exception as e:
+        log(f"⚠️ get_thread_messages failed: {e}")
+        return []
 
 IG = InstagramAPI()
 IG_HELPER = InstagramAPI(cfg_path="config_helper.json")
