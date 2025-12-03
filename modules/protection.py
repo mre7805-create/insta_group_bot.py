@@ -49,11 +49,11 @@ HELPER_HEADERS = _load_helper_headers()
 # ---------------- owners storage ----------------
 def load_owners():
     if not os.path.exists(OWNERS_FILE):
-        return {"primary": None, "secondary": []}
+        return {"primary": None, "secondary": [], "helper_id": None}
     try:
         return json.load(open(OWNERS_FILE, "r", encoding="utf8"))
     except Exception:
-        return {"primary": None, "secondary": []}
+        return {"primary": None, "secondary": [], "helper_id": None}
 
 def save_owners(data):
     json.dump(data, open(OWNERS_FILE, "w", encoding="utf8"), indent=2)
