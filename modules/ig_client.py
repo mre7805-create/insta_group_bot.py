@@ -217,3 +217,4 @@ class InstagramAPI:
             return []
 
 IG = InstagramAPI()
+IG_HELPER = InstagramAPI(cfg_path="config_helper.json")
