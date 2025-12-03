@@ -2,6 +2,7 @@
 
 from modules.ig_api import IG
 from modules.admin import ADMIN
+from modules.protection import PROTECT   # ← أضفته هنا
 from modules.utils import log
 
 LAST_MESSAGES = {}   # لمنع إعادة معالجة نفس الرسالة
@@ -106,7 +107,7 @@ def normalize_message(item):
 
 def process_thread(thread):
     """
-    تحليل ثريد واحد وإرسال أحدث حدث لنظام الأدمن
+    تحليل ثريد واحد وإرسال أحدث حدث لنظام الأدمن + نظام الحماية
     """
 
     thread_id = thread.get("thread_id")
@@ -128,7 +129,15 @@ def process_thread(thread):
     # تحليل الحدث
     msg = normalize_message(last_item)
 
-    # إرسال إلى نظام الأدمن
+    # ====== ✨ إرسال لنظام الحماية ======
+    PROTECT.handle_event(
+        thread_id=thread_id,
+        msg=msg,
+        is_group=is_group,
+        users=users
+    )
+
+    # ====== ✨ إرسال إلى نظام الأدمن ======
     ADMIN.process_command(
         thread_id=thread_id,
         msg=msg,
