@@ -13,16 +13,16 @@ def normalize_message(item):
     يدعم:
     - نص
     - طرد
-    - اضافة عضو
+    - إضافة عضو
     - مغادرة عضو
     - تغيير اسم القروب
     - تغيير صورة القروب
     - action_log
-    - وغيرها من item_type
+    - كل item_type أخرى
     """
 
     msg_type = item.get("item_type")
-    user_id = str(item.get("user_id") or "")  # قد يكون فاضي
+    user_id = str(item.get("user_id") or "")  # قد يكون فارغ عند بعض الأحداث
 
     # ============ 1) رسائل نصية ============
     if msg_type == "text":
@@ -51,7 +51,7 @@ def normalize_message(item):
             "raw": item
         }
 
-    # ============ 4) مغادرة عضو ============
+    # ============ 4) أحداث action_log ============
     if msg_type == "action_log":
         action = item.get("action_log", {}).get("description", "").lower()
 
@@ -59,16 +59,17 @@ def normalize_message(item):
         if "left the group" in action:
             return {
                 "type": "left_group",
-                "actor_id": str(item.get("user_id") or ""),
+                "actor_id": user_id,
                 "raw": item
             }
 
         # تغيير اسم القروب
         if "changed the group name to" in action:
+            new_name = action.replace("changed the group name to", "").strip(" '")
             return {
                 "type": "group_name_changed",
-                "actor_id": str(item.get("user_id") or ""),
-                "new_name": action.replace("changed the group name to", "").strip(" '"),
+                "actor_id": user_id,
+                "new_name": new_name,
                 "raw": item
             }
 
@@ -76,26 +77,26 @@ def normalize_message(item):
         if "changed the group photo" in action:
             return {
                 "type": "group_photo_changed",
-                "actor_id": str(item.get("user_id") or ""),
+                "actor_id": user_id,
                 "raw": item
             }
 
-        # إضافة عضو من action_log
+        # إضافة عضو من خلال action_log
         if "added" in action and "to the group" in action:
             return {
                 "type": "add_user",
-                "actor_id": str(item.get("user_id") or ""),
+                "actor_id": user_id,
                 "raw": item
             }
 
-        # أي event آخر
+        # أي action آخر
         return {
             "type": "action_log",
             "text": action,
             "raw": item
         }
 
-    # ============ 5) أي شيء آخر ============
+    # ============ 5) fallback ============
     return {
         "type": msg_type,
         "raw": item
@@ -105,13 +106,13 @@ def normalize_message(item):
 def process_thread(thread):
     thread_id = thread.get("thread_id")
     users = thread.get("users", [])
-    is_group = len(users) > 2
+    is_group = len(users) > 2  # IG يعتبر 3+ = قروب
 
     items = thread.get("items", [])
     if not items:
         return
 
-    last_item = items[0]  # أحدث رسالة
+    last_item = items[0]  # أحدث رسالة/حدث
 
     # منع التكرار
     msg_key = f"{thread_id}:{last_item.get('item_id')}"
@@ -119,12 +120,9 @@ def process_thread(thread):
         return
     LAST_MESSAGES[msg_key] = True
 
-    # طبع الحدث (للفحص)
-    # log(f"📥 NEW ITEM: {last_item.get('item_type')}")
-
     msg = normalize_message(last_item)
 
-    # إرسال الحدث إلى نظام الأدمن
+    # إرسال الحدث لنظام الأدمن
     ADMIN.process_command(
         thread_id=thread_id,
         msg=msg,
